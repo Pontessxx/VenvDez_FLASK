@@ -88,7 +88,7 @@ color_marker_map = {
     'FÉRIAS': {'cor': '#a5a5a5', 'marker': 'square'},
     'ALPHAVILLE':{'cor': '#76A9B7', 'marker': 'square'},
     'LICENÇA':{'cor': '#632aa1', 'marker': 'diamond'},
-    'SUBSTITUTO':{'cor': "#2A99A1", 'marker': 'square'},
+    'SUBSTITUICAO':{'cor': "#2A99A1", 'marker': 'square'},
 }
 
 # Dicionário de saudações válidas para o chatbot
@@ -741,6 +741,35 @@ def adiciona_presenca():
         
         # Converte a coluna 'Data' para datetime
         df['Data'] = pd.to_datetime(df['Data'], format='%Y-%m-%d %H:%M:%S')
+        
+        # 🔹 Consulta substituições
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT Substituicoes.DataSubstituicao, 
+                NomeSubstituto.Nome AS Substituto, 
+                NomeSubstituido.Nome AS Substituido
+            FROM (Substituicoes 
+            INNER JOIN Nome AS NomeSubstituto ON Substituicoes.ID_Substituto = NomeSubstituto.ID_Nomes)
+            INNER JOIN Nome AS NomeSubstituido ON Substituicoes.ID_Substituido = NomeSubstituido.ID_Nomes
+            WHERE Substituicoes.ID_SiteEmpresa = ?
+        """, (siteempresa_id,))
+        rows_subs = cursor.fetchall()
+        tuplas_subs = [tuple(r) for r in rows_subs]
+
+        # ── passo 3: pega nomes das colunas
+        cols = [column[0] for column in cursor.description]
+
+        # ── passo 4: monta DataFrame apenas se vierem colunas corretas
+        if not tuplas_subs:
+            df_subs = pd.DataFrame(columns=['Data', 'Substituto', 'Substituido'])
+        else:
+            df_subs = pd.DataFrame(tuplas_subs, columns=cols)
+            df_subs.rename(columns={'DataSubstituicao': 'Data'}, inplace=True)
+            df_subs['Data'] = pd.to_datetime(df_subs['Data'])
+
+        cursor.close()
+        conn.close()
 
         # Gera uma lista contínua de datas entre o menor e o maior valor de data
         min_data = df['Data'].min()
@@ -760,6 +789,21 @@ def adiciona_presenca():
 
         # Preenche valores ausentes com "invisível" para manter a estrutura do gráfico
         df_merge['Presenca'].fillna('invisível', inplace=True)
+        
+        # 🔹 Adiciona coluna com substituído no tooltip
+        df_merge['tooltip_info'] = df_merge.apply(
+            lambda row: f"Substituiu: { df_subs.loc[
+                (df_subs['Substituto'] == row['Nome']) & (df_subs['Data'] == row['Data']), 
+                'Substituido'
+            ].values[0] }"
+            if row['Presenca'].upper() == 'SUBSTITUICAO' and
+            not df_subs.loc[
+                (df_subs['Substituto'] == row['Nome']) & (df_subs['Data'] == row['Data']), 
+                'Substituido'
+            ].empty
+            else "",
+            axis=1
+        )
 
         # Criando o gráfico de dispersão
         fig_dispersao = go.Figure()
@@ -772,7 +816,9 @@ def adiciona_presenca():
                     y=df_tipo['Nome'],
                     mode='markers',
                     marker=dict(color=info['cor'], symbol=info['marker'], size=10),
-                    name=presenca
+                    name=presenca,
+                    text=df_tipo['tooltip_info'],
+                    hovertemplate='%{y} - %{x|%d/%m/%Y}<br>%{text}<extra></extra>'
                 ))
 
         # Adicionar pontos invisíveis para garantir espaçamento correto no gráfico
@@ -884,6 +930,80 @@ def registrar_substituicao():
     
     return redirect(url_for('adiciona_presenca'))
     
+@app.route('/adicionar-substituicao', methods=['POST'])
+def adicionar_substituicao():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        substituto_nome = request.form.get("id_substituto")
+        substituido_nome = request.form.get("id_substituido")
+        siteempresa_id = request.form.get("siteempresa_id")
+
+        # Data separada em dia, mês e ano
+        dia = request.form.get("dia")
+        mes = request.form.get("mes")
+        ano = request.form.get("ano")
+
+        # Validação básica
+        if substituto_nome == substituido_nome:
+            flash("O substituto não pode ser o mesmo que o substituído.", "error")
+            return redirect(url_for("adiciona_presenca"))
+
+        try:
+            data_substituicao = datetime.strptime(f"{dia}/{mes}/{ano}", "%d/%m/%Y").date()
+            if data_substituicao.weekday() >= 5:  # 5 = sábado, 6 = domingo
+                flash("Não é permitido registrar substituição em fins de semana.", "error")
+                return redirect(url_for("adiciona_presenca"))
+        except ValueError:
+            flash("Data de substituição inválida.", "error")
+            return redirect(url_for("adiciona_presenca"))
+
+        # Buscar IDs dos nomes
+        cursor.execute("SELECT ID_Nomes FROM Nome WHERE Nome = ? AND id_SiteEmpresa = ?", (substituto_nome, siteempresa_id))
+        id_substituto = cursor.fetchone()
+        cursor.execute("SELECT ID_Nomes FROM Nome WHERE Nome = ? AND id_SiteEmpresa = ?", (substituido_nome, siteempresa_id))
+        id_substituido = cursor.fetchone()
+
+        if not id_substituto or not id_substituido:
+            flash("Nome inválido. Verifique os campos.", "error")
+            return redirect(url_for("adiciona_presenca"))
+
+        # Inserir na tabela Substituicoes
+        cursor.execute("""
+            INSERT INTO Substituicoes (ID_Substituto, ID_Substituido, DataSubstituicao, ID_SiteEmpresa)
+            VALUES (?, ?, ?, ?)
+        """, (id_substituto[0], id_substituido[0], data_substituicao, siteempresa_id))
+
+        # Buscar ou criar tipo de presença "SUBSTITUICAO"
+        cursor.execute("SELECT ID_Presenca FROM Presenca WHERE UCASE(Presenca) = 'SUBSTITUICAO'")
+        row_presenca = cursor.fetchone()
+
+        if row_presenca:
+            id_presenca = row_presenca[0]
+        else:
+            cursor.execute("INSERT INTO Presenca (Presenca) VALUES (?)", ("SUBSTITUICAO",))
+            id_presenca = cursor.lastrowid
+
+        # Inserir também na tabela Controle
+        cursor.execute("""
+            INSERT INTO Controle (id_Nome, id_Presenca, Data, id_SiteEmpresa)
+            VALUES (?, ?, ?, ?)
+        """, (id_substituto[0], id_presenca, data_substituicao, siteempresa_id))
+
+        conn.commit()
+        flash("Substituição registrada com sucesso!", "success")
+
+    except Exception as e:
+        conn.rollback()
+        flash(f"Erro ao registrar substituição: {e}", "error")
+
+    finally:
+        conn.close()
+
+    return redirect(url_for("adiciona_presenca"))
+
+
 
 
 

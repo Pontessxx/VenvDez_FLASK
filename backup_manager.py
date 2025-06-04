@@ -52,10 +52,10 @@ def verificar_backup_mes_passado():
         conn.close()
 
         if resultado > 0:
-            print(f"✅ Backup do mês passado ({nome_backup}) já existe no log.")
+            print(f"[OK] Backup do mês passado ({nome_backup}) já existe no log.")
             return True
         else:
-            print(f"⚠️ Backup do mês passado ({nome_backup}) NÃO encontrado. Criando agora...")
+            print(f"[ALERTA] Backup do mês passado ({nome_backup}) NÃO encontrado. Criando agora...")
             return False
 
     except Exception as e:
@@ -79,10 +79,10 @@ def fazer_backup_mensal(mes=None, ano=None):
 
     try:
         shutil.copy2(caminho_main, caminho_backup_mes)
-        print(f"📦 Backup criado: {caminho_backup_mes}")
+        print(f"[OK] Backup criado: {caminho_backup_mes}")
         registrar_backup_no_bd(nome_backup)
     except Exception as e:
-        print(f"⚠️ Erro ao fazer backup: {e}")
+        print(f"[ERRO] Erro ao fazer backup: {e}")
 
 # 📦 Backup Trimestral
 def fazer_backup_trimestral():
