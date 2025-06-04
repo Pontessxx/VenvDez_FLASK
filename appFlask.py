@@ -417,19 +417,15 @@ def index():
                 # Preenche valores ausentes com "invisível" ou algum valor placeholder
                 df_merge['Presenca'] = df_merge['Presenca'].fillna('invisível')
                 # 🔹 Adiciona coluna com substituído no tooltip
-                df_merge['tooltip_info'] = df_merge.apply(
-                    lambda row: f"Substituiu: { df_subs.loc[
-                        (df_subs['Substituto'] == row['Nome']) & (df_subs['Data'] == row['Data']), 
-                        'Substituido'
-                    ].values[0] }"
-                    if row['Presenca'].upper() == 'SUBSTITUICAO' and
-                    not df_subs.loc[
-                        (df_subs['Substituto'] == row['Nome']) & (df_subs['Data'] == row['Data']), 
-                        'Substituido'
-                    ].empty
-                    else "",
-                    axis=1
-                )
+                # Ajuste na criação da coluna tooltip_info:
+                df_merge['tooltip_info'] = df_merge.apply(lambda row: (
+                    # Caso seja SUBSTITUICAO e exista esse registro em df_subs:
+                    f"Substituiu: { df_subs.loc[(df_subs['Substituto'] == row['Nome']) & (df_subs['Data'] == row['Data']), 'Substituido'].values[0] }"
+                    if (row['Presenca'].upper() == 'SUBSTITUICAO' and
+                        not df_subs.loc[(df_subs['Substituto'] == row['Nome']) & (df_subs['Data'] == row['Data']), 'Substituido'].empty)
+                    # Caso não seja SUBSTITUICAO nem “invisível”, exibe apenas o próprio tipo:
+                    else (row['Presenca'] if row['Presenca'].upper() not in ['SUBSTITUICAO', 'INVISÍVEL'] else "")
+                ), axis=1)
 
                 # Gráfico de dispersão
                 fig_dispersao = go.Figure()
