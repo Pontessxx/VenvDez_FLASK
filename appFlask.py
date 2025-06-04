@@ -365,6 +365,34 @@ def index():
                     df = df[df['Data'].dt.strftime('%m').isin(selected_meses_numeric)]
                 if selected_ano and len(selected_ano) > 0:
                     df = df[df['Data'].dt.year.astype(str).isin(selected_ano)]
+                    
+                
+                # 🔹 Consulta substituições
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT Substituicoes.DataSubstituicao, 
+                        NomeSubstituto.Nome AS Substituto, 
+                        NomeSubstituido.Nome AS Substituido
+                    FROM (Substituicoes 
+                    INNER JOIN Nome AS NomeSubstituto ON Substituicoes.ID_Substituto = NomeSubstituto.ID_Nomes)
+                    INNER JOIN Nome AS NomeSubstituido ON Substituicoes.ID_Substituido = NomeSubstituido.ID_Nomes
+                    WHERE Substituicoes.ID_SiteEmpresa = ?
+                """, (siteempresa_id,))
+                rows_subs = cursor.fetchall()
+                tuplas_subs = [tuple(r) for r in rows_subs]
+
+                # ── passo 3: pega nomes das colunas
+                cols = [column[0] for column in cursor.description]
+
+                # ── passo 4: monta DataFrame apenas se vierem colunas corretas
+                if not tuplas_subs:
+                    df_subs = pd.DataFrame(columns=['Data', 'Substituto', 'Substituido'])
+                else:
+                    df_subs = pd.DataFrame(tuplas_subs, columns=cols)
+                    df_subs.rename(columns={'DataSubstituicao': 'Data'}, inplace=True)
+                    df_subs['Data'] = pd.to_datetime(df_subs['Data'])
+
 
                 # Gera uma lista contínua de datas entre o menor e o maior valor de data
                 min_data = df['Data'].min()
@@ -388,6 +416,20 @@ def index():
 
                 # Preenche valores ausentes com "invisível" ou algum valor placeholder
                 df_merge['Presenca'] = df_merge['Presenca'].fillna('invisível')
+                # 🔹 Adiciona coluna com substituído no tooltip
+                df_merge['tooltip_info'] = df_merge.apply(
+                    lambda row: f"Substituiu: { df_subs.loc[
+                        (df_subs['Substituto'] == row['Nome']) & (df_subs['Data'] == row['Data']), 
+                        'Substituido'
+                    ].values[0] }"
+                    if row['Presenca'].upper() == 'SUBSTITUICAO' and
+                    not df_subs.loc[
+                        (df_subs['Substituto'] == row['Nome']) & (df_subs['Data'] == row['Data']), 
+                        'Substituido'
+                    ].empty
+                    else "",
+                    axis=1
+                )
 
                 # Gráfico de dispersão
                 fig_dispersao = go.Figure()
@@ -400,7 +442,9 @@ def index():
                             y=df_tipo['Nome'],
                             mode='markers',
                             marker=dict(color=info['cor'], symbol=info['marker'], size=10),
-                            name=presenca
+                            name=presenca,
+                            text=df_tipo['tooltip_info'],
+                            hovertemplate='%{y} - %{x|%d/%m/%Y}<br>%{text}<extra></extra>'
                         ))
 
                 # Adicionar os pontos invisíveis para garantir o espaçamento correto
@@ -434,7 +478,9 @@ def index():
                         font=dict(color='#000000'),
                         plot_bgcolor='rgba(0,0,0,0)',
                         paper_bgcolor='rgba(0,0,0,0)',
-                        hovermode='closest'
+                        hovermode='closest',
+                        # text=df_tipo['tooltip_info'],
+                        # hovertemplate='%{y} - %{x|%d/%m/%Y}<br>%{text}<extra></extra>'
                     )
                 else:
                       # Customizando o layout do gráfico de dispersão
@@ -883,53 +929,7 @@ def adiciona_presenca():
     )
 
 
-@app.route('/registrar_substituicao', methods=['POST'])
-def registrar_substituicao():
-    conn = get_db_connection()
-    if not conn:
-        flash("Erro ao conectar ao banco de dados.", "error")
-        return redirect(url_for('index'))
 
-    # Consultar sites e presenças
-    query_sites = "SELECT DISTINCT Sites FROM Site"
-    sites = pd.read_sql(query_sites, conn)['Sites'].tolist()
-    presenca_opcoes = pd.read_sql("SELECT DISTINCT Presenca FROM Presenca", conn)['Presenca'].tolist()
-
-    # Captura os valores dos filtros e salva na sessão
-    selected_site = request.form.get("site") or session.get('selected_site')
-    selected_empresa = request.form.get("empresa") or session.get('selected_empresa')
-    if selected_site:
-        session['selected_site'] = selected_site
-    if selected_empresa:
-        session['selected_empresa'] = selected_empresa
-
-    # Inicializa variáveis
-    nomes = []
-    nomes_desativados = []
-    empresas = []
-    siteempresa_id = None
-    if selected_site:
-        empresas = get_empresas(get_site_id(selected_site))
-        empresas_inativas = get_empresas_inativas(get_site_id(selected_site))
-
-        if selected_empresa:
-            site_id = get_site_id(selected_site)
-            empresa_id = get_empresa_id(selected_empresa, empresas)
-            siteempresa_id = get_siteempresa_id(site_id, empresa_id)
-
-            if site_id and empresa_id:
-                # Obtém nomes ativos e desativados
-                if siteempresa_id:
-                    nomes = get_nomes(siteempresa_id, ativos=True)
-                    nomes_desativados = get_nomes(siteempresa_id, ativos=False)
-
-    substituto = request.form.get('substituto')
-    substituido = request.form.get('substituido')
-    data = request.form.get('data')
-    id_siteempresa = request.form.get('id_siteempresa')
-    
-    return redirect(url_for('adiciona_presenca'))
-    
 @app.route('/adicionar-substituicao', methods=['POST'])
 def adicionar_substituicao():
     try:
